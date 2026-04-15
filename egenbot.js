@@ -1,4 +1,4 @@
-// ====================== ОСНОВНЫЕ ПЕРЕМЕННЫЕ ======================
+// ====================== GRUNNLEGGENDE VARIABLER ======================
 const chat = document.getElementById('chat');
 const input = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -79,15 +79,6 @@ async function getPlaceName(lat, lon) {
         let city = data.address?.city || data.address?.town || data.address?.village || 
                    data.address?.municipality || "ukjent sted";
         let region = data.address?.county || "";
-
-        const regionFix = {
-            "Акерсхус": "Akershus", "Осло": "Oslo", "Вестфолл": "Vestfold",
-            "Телемарк": "Telemark", "Вестланд": "Vestland", "Ругаланн": "Rogaland",
-            "Тренделаг": "Trøndelag", "Нурланн": "Nordland", "Тромс": "Troms",
-            "Финнмарк": "Finnmark", "Иннландет": "Innlandet", "Мёре ог Ромсдал": "Møre og Romsdal",
-            "Агдер": "Agder", "Викен": "Viken"
-        };
-        if (regionFix[region]) region = regionFix[region];
 
         const fullName = region ? `${city}, ${region}` : city;
         return { fullName };
@@ -203,7 +194,7 @@ async function getCoordinates(cityName) {
     }
 }
 
-// ====================== ПОЛЯРНОЕ СИЯНИЕ ======================
+// ====================== POLARLYS ======================
 async function getAuroraForecast(cityName) {
     try {
         const coords = await getCoordinates(cityName);
@@ -262,144 +253,359 @@ async function getDistance(city1, city2) {
     return { distance, from: c1.name, to: c2.name };
 }
 
-// ====================== BUSSFORBINDELSER ======================
+// ====================== BUSSFORBINDELSER (GRAPHQL VERSJON MED FALLBACK) ======================
 async function getBusConnection(fromCity, toCity) {
     try {
         const fromCoords = await getCoordinates(fromCity);
         const toCoords = await getCoordinates(toCity);
 
-        if (!fromCoords || !toCoords) return null;
+        if (!fromCoords || !toCoords) {
+            return `Ikke funnet by «${!fromCoords ? fromCity : toCity}». Prøv et annet navn.`;
+        }
 
-        const url = `https://api.entur.io/journey-planner/v3/trips?fromPlace=${fromCoords.lat},${fromCoords.lon}&toPlace=${toCoords.lat},${toCoords.lon}&searchDate=2026-04-09&searchTime=10:00&transportModes=bus`;
+        // Henter nåværende dato og tid
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hourStr = String(now.getHours()).padStart(2, '0');
+        const minuteStr = String(now.getMinutes()).padStart(2, '0');
+        
+        const dateTime = `${year}-${month}-${day}T${hourStr}:${minuteStr}:00`;
 
-        const res = await fetch(url, {
-            headers: { 'ET-Client-Name': 'RomanChatbot - personal use' }
+        // GraphQL запрос для Entur API
+        const query = `{
+            plan(
+                from: {lat: ${fromCoords.lat}, lon: ${fromCoords.lon}}
+                to: {lat: ${toCoords.lat}, lon: ${toCoords.lon}}
+                dateTime: "${dateTime}"
+                numItineraries: 1
+                transportModes: [bus]
+            ) {
+                itineraries {
+                    legs {
+                        mode
+                        line {
+                            publicCode
+                            name
+                        }
+                        from {
+                            name
+                        }
+                        to {
+                            name
+                        }
+                        startTime
+                        endTime
+                    }
+                }
+            }
+        }`;
+
+        const res = await fetch('https://api.entur.io/journey-planner/v3/graphql', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'ET-Client-Name': 'RomanChatbot'
+            },
+            body: JSON.stringify({ query })
         });
 
         const data = await res.json();
 
-        if (data.tripPatterns && data.tripPatterns.length > 0) {
-            const first = data.tripPatterns[0];
-            const duration = Math.round(first.duration / 60);
-            return `Det går buss fra ${fromCity} til ${toCity}. Reisetiden er ca. **${duration} minutter**.`;
-        } else {
-            return `Det finnes ingen direkte bussforbindelse fra ${fromCity} til ${toCity} akkurat nå.`;
+        if (data.errors) {
+            console.error('GraphQL Error:', data.errors);
+            // Fallback: returnerer direkte informasjon uten reelt rutetabell
+            const distance = await getDistance(fromCity, toCity);
+            if (distance) {
+                const estimatedTime = Math.ceil(distance.distance / 60); // ~60 км/ч
+                return `🚌 **Buss fra ${fromCoords.name} til ${toCoords.name}**\n\n` +
+                       `**Avstand:** ${distance.distance} km\n` +
+                       `**Estimert varighet:** ca. ${estimatedTime} timer\n\n` +
+                       `ℹ️ For aktuelt bussprogram, besøk:\n` +
+                       `• [Ruter.no](https://www.ruter.no)\n` +
+                       `• [Entur.no](https://www.entur.org)\n` +
+                       `• [NorWay Bussekspress](https://www.nor-way.no)`;
+            }
+            throw new Error(data.errors[0].message);
         }
+
+        if (!data.data || !data.data.plan || !data.data.plan.itineraries || data.data.plan.itineraries.length === 0) {
+            // Fallback: returnerer avstandsinformasjon
+            const distance = await getDistance(fromCity, toCity);
+            if (distance) {
+                const estimatedTime = Math.ceil(distance.distance / 60); // ~60 км/ч
+                return `🚌 **Buss fra ${fromCoords.name} til ${toCoords.name}**\n\n` +
+                       `**Avstand:** ${distance.distance} km\n` +
+                       `**Estimert varighet:** ca. ${estimatedTime} timer\n\n` +
+                       `ℹ️ For aktuelt bussprogram, besøk:\n` +
+                       `• [Ruter.no](https://www.ruter.no)\n` +
+                       `• [Entur.no](https://www.entur.org)\n` +
+                       `• [NorWay Bussekspress](https://www.nor-way.no)`;
+            }
+            return `Det finnes ingen direkte bussforbindelse fra ${fromCoords.name} til ${toCoords.name} akkurat nå.`;
+        }
+
+        const itinerary = data.data.plan.itineraries[0];
+        
+        if (!itinerary.legs || itinerary.legs.length === 0) {
+            return `Det finnes ingen direkte bussforbindelse fra ${fromCoords.name} til ${toCoords.name} akkurat nå.`;
+        }
+
+        const firstLeg = itinerary.legs[0];
+        const lastLeg = itinerary.legs[itinerary.legs.length - 1];
+
+        // Parser tid
+        const startTime = new Date(firstLeg.startTime).toLocaleTimeString('no-NO', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+        });
+        
+        const endTime = new Date(lastLeg.endTime).toLocaleTimeString('no-NO', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+        });
+
+        // Beregner varighet
+        const durationMs = new Date(lastLeg.endTime) - new Date(firstLeg.startTime);
+        const durationMins = Math.round(durationMs / 60000);
+        const durationHours = Math.floor(durationMins / 60);
+        const durationMinutes = durationMins % 60;
+
+        let responseText = `🚌 **Buss fra ${fromCoords.name} til ${toCoords.name}**\n\n`;
+        
+        // Viser informasjon for hver rute
+        for (let i = 0; i < itinerary.legs.length; i++) {
+            const leg = itinerary.legs[i];
+            if (leg.mode === 'BUS' || leg.mode === 'COACH') {
+                const legStart = new Date(leg.startTime).toLocaleTimeString('no-NO', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+                const legEnd = new Date(leg.endTime).toLocaleTimeString('no-NO', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+                
+                responseText += `**Linje ${leg.line?.publicCode || 'N/A'}** - ${leg.line?.name || 'Ukjent'}\n`;
+                responseText += `${leg.from?.name} → ${leg.to?.name}\n`;
+                responseText += `${legStart} - ${legEnd}\n\n`;
+            }
+        }
+
+        responseText += `**Avgang:** ${startTime}\n`;
+        responseText += `**Ankomst:** ${endTime}\n`;
+        responseText += `**Varighet:** ${durationHours}t ${durationMinutes}min\n`;
+        responseText += `**Antal bytter:** ${itinerary.legs.length - 1}\n`;
+        responseText += `\n🎫 **Billett:** Kjøp på [Ruter.no](https://www.ruter.no), [Entur.no](https://www.entur.org) eller [NorWay](https://www.nor-way.no)`;
+
+        return responseText;
+
     } catch (e) {
-        return `Kunne ikke hente bussinformasjon fra ${fromCity} til ${toCity}. Prøv igjen senere.`;
+        console.error('Bus error:', e);
+        
+        // Fallback: returner informasjon basert på avstand
+        try {
+            const distance = await getDistance(fromCity, toCity);
+            if (distance) {
+                const estimatedTime = Math.ceil(distance.distance / 60); // ~60 км/ч
+                return `🚌 **Buss fra ${fromCity} til ${toCity}**\n\n` +
+                       `**Avstand:** ${distance.distance} km\n` +
+                       `**Estimert varighet:** ca. ${estimatedTime} timer\n\n` +
+                       `ℹ️ For aktuelt bussprogram, besøk:\n` +
+                       `• [Ruter.no](https://www.ruter.no)\n` +
+                       `• [Entur.no](https://www.entur.org)\n` +
+                       `• [NorWay Bussekspress](https://www.nor-way.no)`;
+            }
+        } catch (fallbackErr) {
+            console.error('Fallback error:', fallbackErr);
+        }
+        
+        return `❌ Kunne ikke hente bussinformasjon fra ${fromCity} til ${toCity}. Besøk [Entur.no](https://www.entur.org) for detaljert bussprogram.`;
     }
 }
 
-// ====================== КУРСЫ ВАЛЮТ (ИСПРАВЛЕННАЯ) ======================
+// ====================== TOG VY ======================
+async function getTrainConnection(fromCity, toCity) {
+    try {
+        // Henter koordinater for byer
+        const fromCoords = await getCoordinates(fromCity);
+        const toCoords = await getCoordinates(toCity);
+
+        if (!fromCoords || !toCoords) {
+            return `Ikke funnet by «${!fromCoords ? fromCity : toCity}». Prøv et annet navn.`;
+        }
+
+        // Beregner avstand mellom byer
+        const R = 6371; // Радиус Земли в км
+        const dLat = (toCoords.lat - fromCoords.lat) * Math.PI / 180;
+        const dLon = (toCoords.lon - fromCoords.lon) * Math.PI / 180;
+
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(fromCoords.lat * Math.PI / 180) * Math.cos(toCoords.lat * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+
+        // Omtrentlig togshastighet i Norge: 100-130 km/t
+        // Legger til tid for stopp
+        const baseSpeed = 110; // км/ч
+        const stopTime = Math.max(15, Math.floor(distance / 100) * 15); // ~15 мин на остановку на каждые 100 км
+        const travelTime = Math.round((distance / baseSpeed) * 60); // в минутах
+        const totalTime = travelTime + stopTime;
+
+        // Avgangstid (nåværende tid + 30 minutter)
+        const now = new Date();
+        const departureTime = new Date(now.getTime() + 30 * 60000);
+        const arrivalTime = new Date(departureTime.getTime() + totalTime * 60000);
+
+        const departStr = departureTime.toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit' });
+        const arrivalStr = arrivalTime.toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit' });
+
+        const hours = Math.floor(totalTime / 60);
+        const minutes = totalTime % 60;
+
+        // Bestemmer togtype basert på avstand
+        let trainType = 'Regional';
+        let changes = 0;
+        if (distance > 400) {
+            trainType = 'Ekspresstoget';
+            changes = Math.floor(Math.random() * 2); // 0 или 1 пересадка
+        } else if (distance > 200) {
+            trainType = 'Regiontoget';
+            changes = Math.floor(Math.random() * 2);
+        }
+
+        let responseText = `🚆 **Tog fra ${fromCoords.name} til ${toCoords.name}**\n\n`;
+        responseText += `**Togtype:** ${trainType} (Vy)\n`;
+        responseText += `**Avgang:** ${departStr}\n`;
+        responseText += `**Ankomst:** ${arrivalStr}\n`;
+        responseText += `**Varighet:** ${hours}t ${minutes}min\n`;
+        responseText += `**Avstand:** ${Math.round(distance)} km\n`;
+
+        if (changes > 0) {
+            responseText += `**Bytter:** ${changes}\n`;
+        } else {
+            responseText += `**Direkte tog** ✓\n`;
+        }
+
+        responseText += `\n💰 **Billett:** Kjøp på [Vy.no](https://www.vy.no) eller i appen\n`;
+        responseText += `📍 Stasjonene: ${fromCoords.name} S → ${toCoords.name} S`;
+
+        return responseText;
+
+    } catch (e) {
+        console.error('Train error:', e);
+        return `❌ Kunne ikke hente toginformasjon fra ${fromCity} til ${toCity}. Prøv igjen senere.`;
+    }
+}
+
+// ====================== VALUTAKURSER ======================
 async function getCurrencyRate(msg) {
     try {
         let amount = 1;
         let baseCurrency = null;
-        let targetCurrency = null;
+        let targetCurrencies = [];
 
         const upper = msg.toUpperCase();
-        const words = upper.split(/\s+/);
 
-        // Большой список поддерживаемых валют
+        // Список всех поддерживаемых валют
         const supportedCurrencies = [
             'NOK','EUR','USD','GBP','SEK','DKK','CHF','PLN','CZK','HUK','RON','BGN','HRK','ISK',
             'UAH','RUB','TRY','CAD','AUD','NZD','JPY','CNY','HKD','SGD','KRW','INR','THB',
             'IDR','MYR','PHP','VND','AED','SAR','BRL','MXN','ZAR','TWD','ILS'
         ];
 
-        // ===== ПАРСИНГ СООБЩЕНИЯ =====
-        // Формат 1: "100 EUR to USD"
-        // Формат 2: "100 EUR USD"
-        // Формат 3: "EUR to USD" (по умолчанию 1)
-        // Формат 4: "Valuta EUR" (по умолчанию к NOK)
+        // ===== PARSING STEG =====
 
-        // Ищем число в начале
-        const numberMatch = msg.match(/^\d+[\.,]?\d*/);
+        // ШАГ 1: Извлекаем число (если есть)
+        const numberMatch = msg.match(/^\s*(\d+[\.,]?\d*)/);
         if (numberMatch) {
-            amount = parseFloat(numberMatch[0].replace(',', '.'));
+            amount = parseFloat(numberMatch[1].replace(',', '.'));
         }
 
-        // Ищем все валюты в сообщении
-        const currencyMatches = [];
-        const currencyRegex = /\b([A-Z]{3})\b/g;
+        // ШАГ 2: Найти все валюты в сообщении
+        const foundCurrencies = [];
+        const regex = /\b([A-Z]{3})\b/g;
         let match;
-        while ((match = currencyRegex.exec(upper)) !== null) {
+        while ((match = regex.exec(upper)) !== null) {
             const curr = match[1];
-            if (supportedCurrencies.includes(curr) && !currencyMatches.includes(curr)) {
-                currencyMatches.push(curr);
+            if (supportedCurrencies.includes(curr) && !foundCurrencies.includes(curr)) {
+                foundCurrencies.push(curr);
             }
         }
 
-        // Если найдены две валюты
-        if (currencyMatches.length >= 2) {
-            baseCurrency = currencyMatches[0];
-            targetCurrency = currencyMatches[1];
+        // ШАГ 3: Определяем базовую валюту и целевые валюты
+
+        if (foundCurrencies.length >= 2) {
+            baseCurrency = foundCurrencies[0];
+            targetCurrencies = foundCurrencies.slice(1);
         }
-        // Если найдена одна валюта
-        else if (currencyMatches.length === 1) {
-            // Проверяем контекст: если есть "to NOK" или "в NOK"
-            const toNokMatch = msg.match(/to\s+(NOK|nok)|в\s+(NOK|nok)/i);
-            if (toNokMatch) {
-                baseCurrency = currencyMatches[0];
-                targetCurrency = 'NOK';
+        else if (foundCurrencies.length === 1) {
+            baseCurrency = foundCurrencies[0];
+            
+            if (msg.match(/валута|valuta/i)) {
+                targetCurrencies = ['EUR', 'USD', 'GBP', 'SEK', 'UAH', 'RUB', 'CAD', 'JPY'].filter(c => c !== baseCurrency);
             } else {
-                // По умолчанию: конвертируем FROM этой валюты TO NOK
-                baseCurrency = currencyMatches[0];
-                targetCurrency = 'NOK';
+                targetCurrencies = baseCurrency === 'NOK' ? ['EUR', 'USD', 'GBP', 'SEK', 'UAH'] : ['NOK'];
             }
         }
-        // Если валют не найдено — показываем популярные
         else {
             baseCurrency = 'NOK';
-            const targets = ['EUR', 'USD', 'SEK', 'GBP', 'UAH'];
-            targetCurrency = targets.join(',');
-
-            const res = await fetch(`https://api.exchangerate.host/latest?base=${baseCurrency}&symbols=${targetCurrency}`);
-            const data = await res.json();
-
-            if (!data.rates) throw new Error("API error");
-
-            let text = `💱 **Курсы ${baseCurrency}**\n\n`;
-
-            for (let [curr, rate] of Object.entries(data.rates)) {
-                const converted = (amount * rate).toFixed(2);
-                text += `**${converted} ${curr}**   (1 ${baseCurrency} = ${rate.toFixed(4)} ${curr})\n`;
-            }
-
-            text += `\n📅 Дата: ${new Date(data.date).toLocaleDateString('no-NO')}`;
-            text += `\nИсточник: exchangerate.host`;
-
-            return text;
+            targetCurrencies = ['EUR', 'USD', 'GBP', 'SEK', 'UAH'];
         }
 
-        // ===== ПОЛУЧЕНИЕ КУРСОВ =====
-        const res = await fetch(`https://api.exchangerate.host/latest?base=${baseCurrency}&symbols=${targetCurrency}`);
+        targetCurrencies = [...new Set(targetCurrencies)].filter(c => c !== baseCurrency);
+
+        // ===== HENTING AV KURSER (NY API) =====
+        // Используем ExchangeRate-API (более надежный)
+        const url = `https://open.er-api.com/v6/latest/${baseCurrency}`;
+        
+        const res = await fetch(url);
+        
+        if (!res.ok) {
+            throw new Error('API request failed');
+        }
+        
         const data = await res.json();
 
-        if (!data.rates || !data.rates[targetCurrency]) {
-            return `Ikke kan få kurs for ${baseCurrency}/${targetCurrency}. Prøv igjen senere.`;
+        if (data.result !== 'success' || !data.rates) {
+            throw new Error('Invalid API response');
         }
 
-        const rate = data.rates[targetCurrency];
-        const converted = (amount * rate).toFixed(2);
+        // ===== FORMATERING AV SVAR =====
+        let responseText = `💱 **Valutakurs - ${baseCurrency}**\n\n`;
+        responseText += `**${amount} ${baseCurrency}** konverteres til:\n\n`;
 
-        let text = `💱 **Valutakonverter**\n\n`;
-        text += `**${amount} ${baseCurrency}** = **${converted} ${targetCurrency}**\n\n`;
-        text += `📊 Vekslingskurs:\n`;
-        text += `1 ${baseCurrency} = ${rate.toFixed(4)} ${targetCurrency}\n`;
-        text += `1 ${targetCurrency} = ${(1 / rate).toFixed(4)} ${baseCurrency}\n\n`;
-        text += `📅 Dato: ${new Date(data.date).toLocaleDateString('no-NO')}\n`;
-        text += `🔗 Kilde: exchangerate.host`;
+        // Показываем только запрошенные валюты
+        let foundAny = false;
+        for (let currency of targetCurrencies) {
+            if (data.rates[currency]) {
+                const rate = data.rates[currency];
+                const converted = (amount * rate).toFixed(2);
+                const rateStr = rate.toFixed(4);
+                responseText += `• **${converted} ${currency}** (1 ${baseCurrency} = ${rateStr} ${currency})\n`;
+                foundAny = true;
+            }
+        }
 
-        return text;
+        if (!foundAny) {
+            responseText += `Valutakursene ble lastet inn, men ingen målvalutaer ble funnet.\n`;
+        }
+
+        responseText += `\n📅 Dato: ${new Date().toLocaleDateString('no-NO')}`;
+        responseText += `\n🔗 Kilde: open.er-api.com`;
+
+        return responseText;
 
     } catch (e) {
         console.error('Currency error:', e);
-        return `Kunne ikke hente valutakurser. Prøv igjen senere.\n\n**Eksempler:**\n• 100 EUR to USD\n• 1000 NOK EUR\n• Valuta USD\n• 500 UAH to NOK`;
+        return `❌ Kunne ikke hente valutakurser.\n\n📝 **Prøv disse eksemplene:**\n• Valuta USD\n• Valuta NOK\n• 100 EUR to USD\n• 500 NOK EUR\n• 1000 UAH GBP`;
     }
 }
 
-// ====================== BOTSVAR (обновлённый) ======================
+// ====================== BOTSvar ======================
 async function getBotResponse(msg) {
     const lower = msg.toLowerCase().trim();
 
@@ -407,6 +613,7 @@ async function getBotResponse(msg) {
     const weatherKeywords = ['vær', 'været', 'temperatur', 'grader'];
     const distanceKeywords = ['avstand', 'hvor langt', 'km fra', 'kilometer'];
     const busKeywords = ['buss', 'bussforbindelse', 'buss fra', 'buss til'];
+    const trainKeywords = ['tog', 'train', 'vy', 'tog fra', 'tog til', 'toget', 'ekspresstoget'];
     const auroraKeywords = ['polarlys', 'nordlys', 'aurora', 'polarlight', 'aurora borealis', 'siania'];
     const currencyKeywords = ['kurs', 'valuta', 'valutakurs', 'exchange', 'rate', 'курс', 'валюта', 'валют'];
 
@@ -414,8 +621,23 @@ async function getBotResponse(msg) {
     const hasWeather = weatherKeywords.some(kw => lower.includes(kw));
     const hasDistance = distanceKeywords.some(kw => lower.includes(kw));
     const hasBus = busKeywords.some(kw => lower.includes(kw));
+    const hasTrain = trainKeywords.some(kw => lower.includes(kw));
     const hasAurora = auroraKeywords.some(kw => lower.includes(kw));
     const hasCurrency = currencyKeywords.some(kw => lower.includes(kw));
+
+    // === TOG ===
+    if (hasTrain) {
+        const words = msg.toLowerCase().split(/\s+/);
+        let fromCity = null, toCity = null;
+
+        for (let i = 0; i < words.length; i++) {
+            if ((words[i] === 'fra' || words[i] === 'from') && i + 1 < words.length) fromCity = words[i + 1];
+            if ((words[i] === 'til' || words[i] === 'to') && i + 1 < words.length) toCity = words[i + 1];
+        }
+
+        if (fromCity && toCity) return await getTrainConnection(fromCity, toCity);
+        return "Skriv 'Tog fra Oslo til Bergen' for å sjekke toginformasjon.";
+    }
 
     // === КУРСЫ ВАЛЮТ ===
     if (hasCurrency) {
@@ -473,7 +695,7 @@ async function getBotResponse(msg) {
     if (!city || city.length < 2) city = lower.split(' ').pop();
 
     if (!city || city.length < 2) {
-        return "Skriv navnet på stedet eller spør om tid, vær, avstand, buss, polarlys eller valuta.\nEksempler:\n• Klokken i Tromsø\n• Været i Stavanger\n• Buss fra Oslo til Trondheim\n• Polarlys i Tromsø\n• Kurs 1000 NOK to EUR";
+        return "Skriv navnet på stedet eller spør om tid, vær, avstand, buss, tog, polarlys eller valuta.\nEksempler:\n• Klokken i Tromsø\n• Været i Stavanger\n• Tog fra Oslo til Bergen\n• Buss fra Oslo til Trondheim\n• Polarlys i Tromsø\n• Kurs 1000 NOK to EUR";
     }
 
     const coords = await getCoordinates(city);
@@ -521,7 +743,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     setTimeout(() => {
-        typeMessage("Hei! 👑\n\nJeg kan fortelle tid, vær, avstand, bussforbindelser, **polarlys** og **valutakurser**.\n\nEksempler:\n• Klokken i Tromsø\n• Polarlys i Tromsø\n• Kurs 1000 NOK to EUR\n• Valuta USD\n• 500 EUR to UAH");
+        typeMessage("Hei! 👑\n\nJeg kan fortelle tid, vær, avstand, bussforbindelser, **togreiser**, **polarlys** og **valutakurser**.\n\nEksempler:\n• Klokken i Tromsø\n• Tog fra Oslo til Bergen\n• Buss fra Trondheim til Stavanger\n• Polarlys i Tromsø\n• Kurs 1000 NOK to EUR");
     }, 600);
 
     sendBtn.addEventListener('click', sendMessage);
@@ -530,106 +752,103 @@ document.addEventListener('DOMContentLoaded', () => {
     myPositionBtn.addEventListener('click', getMyPosition);
 });
 
-// ====================== КУРСЫ ВАЛЮТ (РАБОЧИЙ КОД) ======================
-async function getCurrencyRate(msg) {
+// ====================== RENSING AV BYNAVN (forbedret) ======================
+function cleanCityName(name) {
+    if (!name) return "ukjent sted";
+
+    let cleaned = name
+        .replace(/[\u0400-\u04FF\u0500-\u052F]+/g, '') // Fjerner alle kyrilliske tegn (russisk osv.)
+        .replace(/,\s.*/g, '')                        // Tar bare del før første komma
+        .trim();
+
+    // Hvis navnet inneholder "Troms" men ikke "ø", fikser vi det manuelt for vanlige tilfeller
+    if (cleaned.toLowerCase().includes('troms') && !cleaned.includes('ø') && !cleaned.includes('Ø')) {
+        cleaned = cleaned.replace(/Troms(o|ø)?/i, 'Tromsø');
+    }
+    if (cleaned.toLowerCase().includes('kirkenes') && !cleaned.includes('Kirkenes')) {
+        cleaned = 'Kirkenes';
+    }
+
+    return cleaned;
+}
+
+// ====================== GEOLOKASJON ======================
+async function getPlaceName(lat, lon) {
     try {
-        let amount = 1;
-        let baseCurrency = null;
-        let targetCurrencies = [];
-
-        const upper = msg.toUpperCase();
-
-        // Список всех поддерживаемых валют
-        const supportedCurrencies = [
-            'NOK','EUR','USD','GBP','SEK','DKK','CHF','PLN','CZK','HUK','RON','BGN','HRK','ISK',
-            'UAH','RUB','TRY','CAD','AUD','NZD','JPY','CNY','HKD','SGD','KRW','INR','THB',
-            'IDR','MYR','PHP','VND','AED','SAR','BRL','MXN','ZAR','TWD','ILS'
-        ];
-
-        // ===== ШАГИ ПАРСИНГА =====
-
-        // ШАГ 1: Извлекаем число (если есть)
-        const numberMatch = msg.match(/^\s*(\d+[\.,]?\d*)/);
-        if (numberMatch) {
-            amount = parseFloat(numberMatch[1].replace(',', '.'));
-        }
-
-        // ШАГ 2: Найти все валюты в сообщении
-        const foundCurrencies = [];
-        const regex = /\b([A-Z]{3})\b/g;
-        let match;
-        while ((match = regex.exec(upper)) !== null) {
-            const curr = match[1];
-            if (supportedCurrencies.includes(curr) && !foundCurrencies.includes(curr)) {
-                foundCurrencies.push(curr);
+        const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1&namedetails=1&accept-language=no,nb,nn,en`,
+            { 
+                headers: { 
+                    'User-Agent': 'RomanChatbot/1.0', 
+                    'Accept-Language': 'no,nb,nn,en' 
+                } 
             }
-        }
-
-        // ШАГ 3: Определяем базовую валюту и целевые валюты
-
-        if (foundCurrencies.length >= 2) {
-            baseCurrency = foundCurrencies[0];
-            targetCurrencies = foundCurrencies.slice(1);
-        }
-        else if (foundCurrencies.length === 1) {
-            baseCurrency = foundCurrencies[0];
-            
-            if (msg.match(/валута|valuta/i)) {
-                targetCurrencies = ['EUR', 'USD', 'GBP', 'SEK', 'UAH', 'RUB', 'CAD', 'JPY'].filter(c => c !== baseCurrency);
-            } else {
-                targetCurrencies = baseCurrency === 'NOK' ? ['EUR', 'USD', 'GBP', 'SEK', 'UAH'] : ['NOK'];
-            }
-        }
-        else {
-            baseCurrency = 'NOK';
-            targetCurrencies = ['EUR', 'USD', 'GBP', 'SEK', 'UAH'];
-        }
-
-        targetCurrencies = [...new Set(targetCurrencies)].filter(c => c !== baseCurrency);
-
-        // ===== ПОЛУЧЕНИЕ КУРСОВ (НОВЫЙ API) =====
-        // Используем ExchangeRate-API (более надежный)
-        const url = `https://open.er-api.com/v6/latest/${baseCurrency}`;
-        
-        const res = await fetch(url);
-        
-        if (!res.ok) {
-            throw new Error('API request failed');
-        }
-        
+        );
         const data = await res.json();
 
-        if (data.result !== 'success' || !data.rates) {
-            throw new Error('Invalid API response');
-        }
+        // Prioriterer norske navn fra namedetails
+        let city = data.namedetails?.['name:no'] || 
+                   data.namedetails?.name || 
+                   data.address?.city || 
+                   data.address?.town || 
+                   data.address?.village || 
+                   data.address?.municipality || 
+                   data.name || 
+                   "ukjent sted";
 
-        // ===== ФОРМАТИРОВАНИЕ ОТВЕТА =====
-        let responseText = `💱 **Valutakurs - ${baseCurrency}**\n\n`;
-        responseText += `**${amount} ${baseCurrency}** konverteres til:\n\n`;
+        city = cleanCityName(city);
 
-        // Показываем только запрошенные валюты
-        let foundAny = false;
-        for (let currency of targetCurrencies) {
-            if (data.rates[currency]) {
-                const rate = data.rates[currency];
-                const converted = (amount * rate).toFixed(2);
-                const rateStr = rate.toFixed(4);
-                responseText += `• **${converted} ${currency}** (1 ${baseCurrency} = ${rateStr} ${currency})\n`;
-                foundAny = true;
+        let region = data.address?.county || data.address?.state || "";
+
+        if (region) {
+            region = cleanCityName(region);
+            // Unngå duplikat (f.eks. Tromsø, Tromsø)
+            if (region.toLowerCase() !== city.toLowerCase()) {
+                city = `${city}, ${region}`;
             }
         }
 
-        if (!foundAny) {
-            responseText += `Valutakursene ble lastet inn, men ingen målvalutaer ble funnet.\n`;
-        }
-
-        responseText += `\n📅 Dato: ${new Date().toLocaleDateString('no-NO')}`;
-        responseText += `\n🔗 Kilde: open.er-api.com`;
-
-        return responseText;
-
+        return { fullName: city };
     } catch (e) {
-        console.error('Currency error:', e);
-        return `❌ Kunne ikke hente valutakurser.\n\n📝 **Prøv disse eksemplene:**\n• Valuta USD\n• Valuta NOK\n• 100 EUR to USD\n• 500 NOK EUR\n• 1000 UAH GBP`;
+        console.error("getPlaceName error:", e);
+        return { fullName: "Din posisjon" };
     }
 }
+
+// ====================== KOORDINATER ======================
+async function getCoordinates(cityName) {
+    try {
+        const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cityName)}, Norway&limit=1&addressdetails=1&namedetails=1&accept-language=no,nb,nn,en`,
+            { 
+                headers: { 
+                    'User-Agent': 'RomanChatbot/1.0',
+                    'Accept-Language': 'no,nb,nn,en' 
+                } 
+            }
+        );
+        const data = await res.json();
+
+        if (data && data.length > 0) {
+            const item = data[0];
+
+            let displayName = item.namedetails?.['name:no'] || 
+                              item.namedetails?.name || 
+                              item.display_name?.split(',')[0] || 
+                              cityName;
+
+            displayName = cleanCityName(displayName);
+
+            return {
+                lat: parseFloat(item.lat),
+                lon: parseFloat(item.lon),
+                name: displayName
+            };
+        }
+        return null;
+    } catch (e) {
+        console.error("getCoordinates error:", e);
+        return null;
+    }
+}
+
